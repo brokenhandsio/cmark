@@ -31,10 +31,17 @@
 bstrlib.txt
 build
 cmark.dSYM/*
-cmark
 
 # Testing and benchmark
 alltests.md
 progit/
 bench/benchinput.md
 test/afl_results/
+
+# Swift PM Stuff
+.build/
+.DS_Store
+/Packages
+/*.xcodeproj
+Package.pins
+DerivedData/
