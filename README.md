@@ -4,7 +4,7 @@
 [![Build Status](https://github.com/brokenhandsio/cmark-gfm/workflows/CI/badge.svg?branch=master)](https://github.com/brokenhandsio/cmark-gfm/actions)
 [![GitHub license](https://img.shields.io/badge/license-BSD2-blue.svg)](https://raw.githubusercontent.com/brokenhandsio/cmark-gfm/master/COPYING)
 
-`cmark-gfm` is an SPM-compatible fork of Github's implementation of the [CommonMark library](http://commonmark.org/). Github's fork adds GitHub Flavoured Markdown extensions to
+`cmark-gfm` is an SwiftPM-compatible fork of Github's implementation of the [CommonMark library](http://commonmark.org/). Github's fork adds GitHub Flavoured Markdown extensions to
 [the upstream implementation](https://github.com/jgm/cmark), as defined in [the spec](https://github.github.com/gfm/).
 
 For more information, see the [Github `cmark` repository](https://github.com/github/cmark/).
