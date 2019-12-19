@@ -31,7 +31,7 @@
 bstrlib.txt
 build
 cmark.dSYM/*
-cmark
+#cmark
 .vscode
 
 # Testing and benchmark
