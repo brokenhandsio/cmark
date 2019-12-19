@@ -1,5 +1,6 @@
 #include "node.h"
 #include "syntax_extension.h"
+#include "render.h"
 
 #define OUT(s, wrap, escaping) renderer->out(renderer, node, s, wrap, escaping)
 #define LIT(s) renderer->out(renderer, node, s, false, LITERAL)
@@ -190,6 +191,28 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
   case CMARK_NODE_IMAGE:
     break;
 
+  case CMARK_NODE_FOOTNOTE_REFERENCE:
+    if (entering) {
+      LIT("[^");
+      OUT(cmark_chunk_to_cstr(renderer->mem, &node->as.literal), false, LITERAL);
+      LIT("]");
+    }
+    break;
+
+  case CMARK_NODE_FOOTNOTE_DEFINITION:
+    if (entering) {
+      renderer->footnote_ix += 1;
+      LIT("[^");
+      char n[32];
+      snprintf(n, sizeof(n), "%d", renderer->footnote_ix);
+      OUT(n, false, LITERAL);
+      LIT("]: ");
+
+      cmark_strbuf_puts(renderer->prefix, "    ");
+    } else {
+      cmark_strbuf_truncate(renderer->prefix, renderer->prefix->size - 4);
+    }
+    break;
   default:
     assert(false);
     break;

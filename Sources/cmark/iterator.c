@@ -3,7 +3,7 @@
 
 #include "config.h"
 #include "node.h"
-#include "cmark.h"
+#include "cmark-gfm.h"
 #include "iterator.h"
 
 cmark_iter *cmark_iter_new(cmark_node *root) {
@@ -111,6 +111,7 @@ void cmark_consolidate_text_nodes(cmark_node *root) {
       while (tmp && tmp->type == CMARK_NODE_TEXT) {
         cmark_iter_next(iter); // advance pointer
         cmark_strbuf_put(&buf, tmp->as.literal.data, tmp->as.literal.len);
+        cur->end_column = tmp->end_column;
         next = tmp->next;
         cmark_node_free(tmp);
         tmp = next;

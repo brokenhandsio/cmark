@@ -1,10 +1,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <assert.h>
 
 #include "config.h"
-#include "cmark.h"
+#include "cmark-gfm.h"
 #include "node.h"
 #include "buffer.h"
 #include "utf8.h"
@@ -33,8 +34,9 @@ static CMARK_INLINE void outc(cmark_renderer *renderer, cmark_node *node,
   needs_escaping =
       c < 0x80 && escape != LITERAL &&
       ((escape == NORMAL &&
-        (c == '*' || c == '_' || c == '[' || c == ']' || c == '#' || c == '<' ||
-         c == '>' || c == '\\' || c == '`' || c == '!' ||
+        (c < 0x20 ||
+	 c == '*' || c == '_' || c == '[' || c == ']' || c == '#' || c == '<' ||
+         c == '>' || c == '\\' || c == '`' || c == '~' || c == '!' ||
          (c == '&' && cmark_isalpha(nextc)) || (c == '!' && nextc == '[') ||
          (renderer->begin_content && (c == '-' || c == '+' || c == '=') &&
           // begin_content doesn't get set to false til we've passed digits
@@ -49,14 +51,18 @@ static CMARK_INLINE void outc(cmark_renderer *renderer, cmark_node *node,
         (c == '`' || c == '<' || c == '>' || c == '"' || c == '\\')));
 
   if (needs_escaping) {
-    if (cmark_isspace((char)c)) {
+    if (escape == URL && cmark_isspace((char)c)) {
       // use percent encoding for spaces
-      snprintf(encoded, ENCODED_SIZE, "%%%2x", c);
+      snprintf(encoded, ENCODED_SIZE, "%%%2X", c);
       cmark_strbuf_puts(renderer->buffer, encoded);
       renderer->column += 3;
-    } else {
+    } else if (cmark_ispunct((char)c)) {
       cmark_render_ascii(renderer, "\\");
       cmark_render_code_point(renderer, c);
+    } else { // render as entity
+      snprintf(encoded, ENCODED_SIZE, "&#%d;", c);
+      cmark_strbuf_puts(renderer->buffer, encoded);
+      renderer->column += (int)strlen(encoded);
     }
   } else {
     cmark_render_code_point(renderer, c);
@@ -83,7 +89,9 @@ static int longest_backtick_sequence(const char *code) {
 }
 
 static int shortest_unused_backtick_sequence(const char *code) {
-  int32_t used = 1;
+  // note: if the shortest sequence is >= 32, this returns 32
+  // so as not to overflow the bit array.
+  uint32_t used = 1;
   int current = 0;
   size_t i = 0;
   size_t code_len = strlen(code);
@@ -91,8 +99,8 @@ static int shortest_unused_backtick_sequence(const char *code) {
     if (code[i] == '`') {
       current++;
     } else {
-      if (current) {
-        used |= (1 << current);
+      if (current > 0 && current < 32) {
+        used |= (1U << current);
       }
       current = 0;
     }
@@ -100,7 +108,7 @@ static int shortest_unused_backtick_sequence(const char *code) {
   }
   // return number of first bit that is 0:
   i = 0;
-  while (used & 1) {
+  while (i < 32 && used & 1) {
     used = used >> 1;
     i++;
   }
@@ -165,9 +173,11 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
   int list_number;
   cmark_delim_type list_delim;
   int numticks;
+  bool extra_spaces;
   int i;
   bool entering = (ev_type == CMARK_EVENT_ENTER);
   const char *info, *code, *title;
+  char fencechar[2] = {'\0', '\0'};
   size_t info_len, code_len;
   char listmarker[LISTMARKER_SIZE];
   char *emph_delim;
@@ -280,6 +290,7 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
     }
     info = cmark_node_get_fence_info(node);
     info_len = strlen(info);
+    fencechar[0] = strchr(info, '`') == NULL ? '`' : '~';
     code = cmark_node_get_literal(node);
     code_len = strlen(code);
     // use indented form if no info, and code doesn't
@@ -299,7 +310,7 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
         numticks = 3;
       }
       for (i = 0; i < numticks; i++) {
-        LIT("`");
+        LIT(fencechar);
       }
       LIT(" ");
       OUT(info, false, LITERAL);
@@ -307,7 +318,7 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
       OUT(cmark_node_get_literal(node), false, LITERAL);
       CR();
       for (i = 0; i < numticks; i++) {
-        LIT("`");
+        LIT(fencechar);
       }
     }
     BLANKLINE();
@@ -366,14 +377,17 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
     code = cmark_node_get_literal(node);
     code_len = strlen(code);
     numticks = shortest_unused_backtick_sequence(code);
+    extra_spaces = code_len == 0 ||
+	    code[0] == '`' || code[code_len - 1] == '`' ||
+	    code[0] == ' ' || code[code_len - 1] == ' ';
     for (i = 0; i < numticks; i++) {
       LIT("`");
     }
-    if (code_len == 0 || code[0] == '`') {
+    if (extra_spaces) {
       LIT(" ");
     }
     OUT(cmark_node_get_literal(node), allow_wrap, LITERAL);
-    if (code_len == 0 || code[code_len - 1] == '`') {
+    if (extra_spaces) {
       LIT(" ");
     }
     for (i = 0; i < numticks; i++) {
@@ -457,6 +471,29 @@ static int S_render_node(cmark_renderer *renderer, cmark_node *node,
         LIT("\"");
       }
       LIT(")");
+    }
+    break;
+
+  case CMARK_NODE_FOOTNOTE_REFERENCE:
+    if (entering) {
+      LIT("[^");
+      OUT(cmark_chunk_to_cstr(renderer->mem, &node->as.literal), false, LITERAL);
+      LIT("]");
+    }
+    break;
+
+  case CMARK_NODE_FOOTNOTE_DEFINITION:
+    if (entering) {
+      renderer->footnote_ix += 1;
+      LIT("[^");
+      char n[32];
+      snprintf(n, sizeof(n), "%d", renderer->footnote_ix);
+      OUT(n, false, LITERAL);
+      LIT("]:\n");
+
+      cmark_strbuf_puts(renderer->prefix, "    ");
+    } else {
+      cmark_strbuf_truncate(renderer->prefix, renderer->prefix->size - 4);
     }
     break;
 

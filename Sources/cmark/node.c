@@ -21,6 +21,7 @@ bool cmark_node_can_contain_type(cmark_node *node, cmark_node_type child_type) {
   switch (node->type) {
   case CMARK_NODE_DOCUMENT:
   case CMARK_NODE_BLOCK_QUOTE:
+  case CMARK_NODE_FOOTNOTE_DEFINITION:
   case CMARK_NODE_ITEM:
     return CMARK_NODE_TYPE_BLOCK_P(child_type) && child_type != CMARK_NODE_ITEM;
 
@@ -68,10 +69,11 @@ static bool S_can_contain(cmark_node *node, cmark_node *child) {
   return cmark_node_can_contain_type(node, (cmark_node_type) child->type);
 }
 
-cmark_node *cmark_node_new_with_mem(cmark_node_type type, cmark_mem *mem) {
+cmark_node *cmark_node_new_with_mem_and_ext(cmark_node_type type, cmark_mem *mem, cmark_syntax_extension *extension) {
   cmark_node *node = (cmark_node *)mem->calloc(1, sizeof(*node));
   cmark_strbuf_init(mem, &node->content, 0);
   node->type = (uint16_t)type;
+  node->extension = extension;
 
   switch (node->type) {
   case CMARK_NODE_HEADING:
@@ -81,7 +83,7 @@ cmark_node *cmark_node_new_with_mem(cmark_node_type type, cmark_mem *mem) {
   case CMARK_NODE_LIST: {
     cmark_list *list = &node->as.list;
     list->list_type = CMARK_BULLET_LIST;
-    list->start = 1;
+    list->start = 0;
     list->tight = false;
     break;
   }
@@ -90,12 +92,25 @@ cmark_node *cmark_node_new_with_mem(cmark_node_type type, cmark_mem *mem) {
     break;
   }
 
+  if (node->extension && node->extension->opaque_alloc_func) {
+    node->extension->opaque_alloc_func(node->extension, mem, node);
+  }
+
   return node;
 }
 
-cmark_node *cmark_node_new(cmark_node_type type) {
+cmark_node *cmark_node_new_with_ext(cmark_node_type type, cmark_syntax_extension *extension) {
   extern cmark_mem CMARK_DEFAULT_MEM_ALLOCATOR;
-  return cmark_node_new_with_mem(type, &CMARK_DEFAULT_MEM_ALLOCATOR);
+  return cmark_node_new_with_mem_and_ext(type, &CMARK_DEFAULT_MEM_ALLOCATOR, extension);
+}
+
+cmark_node *cmark_node_new_with_mem(cmark_node_type type, cmark_mem *mem)
+{
+  return cmark_node_new_with_mem_and_ext(type, mem, NULL);
+}
+
+cmark_node *cmark_node_new(cmark_node_type type) {
+  return cmark_node_new_with_ext(type, NULL);
 }
 
 static void free_node_as(cmark_node *node) {
@@ -108,6 +123,8 @@ static void free_node_as(cmark_node *node) {
     case CMARK_NODE_HTML_INLINE:
     case CMARK_NODE_CODE:
     case CMARK_NODE_HTML_BLOCK:
+    case CMARK_NODE_FOOTNOTE_REFERENCE:
+    case CMARK_NODE_FOOTNOTE_DEFINITION:
     cmark_chunk_free(NODE_MEM(node), &node->as.literal);
       break;
     case CMARK_NODE_LINK:
@@ -319,6 +336,7 @@ const char *cmark_node_get_literal(cmark_node *node) {
   case CMARK_NODE_TEXT:
   case CMARK_NODE_HTML_INLINE:
   case CMARK_NODE_CODE:
+  case CMARK_NODE_FOOTNOTE_REFERENCE:
     return cmark_chunk_to_cstr(NODE_MEM(node), &node->as.literal);
 
   case CMARK_NODE_CODE_BLOCK:
@@ -341,6 +359,7 @@ int cmark_node_set_literal(cmark_node *node, const char *content) {
   case CMARK_NODE_TEXT:
   case CMARK_NODE_HTML_INLINE:
   case CMARK_NODE_CODE:
+  case CMARK_NODE_FOOTNOTE_REFERENCE:
     cmark_chunk_set_cstr(NODE_MEM(node), &node->as.literal, content);
     return 1;
 

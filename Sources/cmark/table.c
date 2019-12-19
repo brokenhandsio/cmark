@@ -1,19 +1,22 @@
-#include "cmark_extension_api.h"
+#include "cmark-gfm-extension_api.h"
 #include "html.h"
 #include "inlines.h"
 #include "parser.h"
 #include "references.h"
-#include "string.h"
+#include <string.h>
+#include "render.h"
 
 #include "ext_scanners.h"
 #include "strikethrough.h"
 #include "table.h"
+#include "cmark-gfm-core-extensions.h"
 
-static cmark_node_type CMARK_NODE_TABLE, CMARK_NODE_TABLE_ROW,
+cmark_node_type CMARK_NODE_TABLE, CMARK_NODE_TABLE_ROW,
     CMARK_NODE_TABLE_CELL;
 
 typedef struct {
   uint16_t n_columns;
+  int paragraph_offset;
   cmark_llist *cells;
 } table_row;
 
@@ -26,9 +29,16 @@ typedef struct {
   bool is_header;
 } node_table_row;
 
+typedef struct {
+  cmark_strbuf *buf;
+  int start_offset, end_offset, internal_offset;
+} node_cell;
+
 static void free_table_cell(cmark_mem *mem, void *data) {
-  cmark_strbuf_free((cmark_strbuf *)data);
-  mem->free(data);
+  node_cell *cell = (node_cell *)data;
+  cmark_strbuf_free((cmark_strbuf *)cell->buf);
+  mem->free(cell->buf);
+  mem->free(cell);
 }
 
 static void free_table_row(cmark_mem *mem, table_row *row) {
@@ -105,25 +115,48 @@ static table_row *row_from_string(cmark_syntax_extension *self,
                                   cmark_parser *parser, unsigned char *string,
                                   int len) {
   table_row *row = NULL;
-  bufsize_t cell_matched, pipe_matched, offset = 0;
+  bufsize_t cell_matched = 1, pipe_matched = 1, offset;
+  int cell_end_offset;
 
   row = (table_row *)parser->mem->calloc(1, sizeof(table_row));
   row->n_columns = 0;
   row->cells = NULL;
 
-  if (len > 0 && string[0] == '|')
-    ++offset;
+  offset = scan_table_cell_end(string, len, 0);
 
-  do {
+  // Parse the cells of the row. Stop if we reach the end of the input, or if we
+  // cannot detect any more cells.
+  while (offset < len && (cell_matched || pipe_matched)) {
     cell_matched = scan_table_cell(string, len, offset);
     pipe_matched = scan_table_cell_end(string, len, offset + cell_matched);
 
     if (cell_matched || pipe_matched) {
-      cmark_strbuf *cell_buf = unescape_pipes(parser->mem, string + offset,
-          cell_matched);
-      cmark_strbuf_trim(cell_buf);
-      row->n_columns += 1;
-      row->cells = cmark_llist_append(parser->mem, row->cells, cell_buf);
+      cell_end_offset = offset + cell_matched - 1;
+
+      if (string[cell_end_offset] == '\n' || string[cell_end_offset] == '\r') {
+        row->paragraph_offset = cell_end_offset;
+
+        cmark_llist_free_full(parser->mem, row->cells, (cmark_free_func)free_table_cell);
+        row->cells = NULL;
+        row->n_columns = 0;
+      } else {
+        cmark_strbuf *cell_buf = unescape_pipes(parser->mem, string + offset,
+            cell_matched);
+        cmark_strbuf_trim(cell_buf);
+
+        node_cell *cell = (node_cell *)parser->mem->calloc(1, sizeof(*cell));
+        cell->buf = cell_buf;
+        cell->start_offset = offset;
+        cell->end_offset = cell_end_offset;
+
+        while (cell->start_offset > 0 && string[cell->start_offset - 1] != '|') {
+          --cell->start_offset;
+          ++cell->internal_offset;
+        }
+
+        row->n_columns += 1;
+        row->cells = cmark_llist_append(parser->mem, row->cells, cell);
+      }
     }
 
     offset += cell_matched + pipe_matched;
@@ -132,7 +165,7 @@ static table_row *row_from_string(cmark_syntax_extension *self,
       pipe_matched = scan_table_row_end(string, len, offset);
       offset += pipe_matched;
     }
-  } while ((cell_matched || pipe_matched) && offset < len);
+  }
 
   if (offset != len || !row->n_columns) {
     free_table_row(parser->mem, row);
@@ -140,6 +173,26 @@ static table_row *row_from_string(cmark_syntax_extension *self,
   }
 
   return row;
+}
+
+static void try_inserting_table_header_paragraph(cmark_parser *parser,
+                                                 cmark_node *parent_container,
+                                                 unsigned char *parent_string,
+                                                 int paragraph_offset) {
+  cmark_node *paragraph;
+  cmark_strbuf *paragraph_content;
+
+  paragraph = cmark_node_new_with_mem(CMARK_NODE_PARAGRAPH, parser->mem);
+
+  paragraph_content = unescape_pipes(parser->mem, parent_string, paragraph_offset);
+  cmark_strbuf_trim(paragraph_content);
+  cmark_node_set_string_content(paragraph, (char *) paragraph_content->ptr);
+  cmark_strbuf_free(paragraph_content);
+  parser->mem->free(paragraph_content);
+
+  if (!cmark_node_insert_before(parent_container, paragraph)) {
+    parser->mem->free(paragraph);
+  }
 }
 
 static cmark_node *try_opening_table_header(cmark_syntax_extension *self,
@@ -198,10 +251,14 @@ static cmark_node *try_opening_table_header(cmark_syntax_extension *self,
     return parent_container;
   }
 
+  if (header_row->paragraph_offset) {
+    try_inserting_table_header_paragraph(parser, parent_container, (unsigned char *)parent_string,
+                                         header_row->paragraph_offset);
+  }
+
   cmark_node_set_syntax_extension(parent_container, self);
 
   parent_container->as.opaque = parser->mem->calloc(1, sizeof(node_table));
-
 
   set_n_table_columns(parent_container, header_row->n_columns);
 
@@ -209,8 +266,8 @@ static cmark_node *try_opening_table_header(cmark_syntax_extension *self,
       (uint8_t *)parser->mem->calloc(header_row->n_columns, sizeof(uint8_t));
   cmark_llist *it = marker_row->cells;
   for (i = 0; it; it = it->next, ++i) {
-    cmark_strbuf *node = (cmark_strbuf *)it->data;
-    bool left = node->ptr[0] == ':', right = node->ptr[node->size - 1] == ':';
+    node_cell *node = (node_cell *)it->data;
+    bool left = node->buf->ptr[0] == ':', right = node->buf->ptr[node->buf->size - 1] == ':';
 
     if (left && right)
       alignments[i] = 'c';
@@ -223,8 +280,10 @@ static cmark_node *try_opening_table_header(cmark_syntax_extension *self,
 
   table_header =
       cmark_parser_add_child(parser, parent_container, CMARK_NODE_TABLE_ROW,
-                             cmark_parser_get_offset(parser));
+                             parent_container->start_column);
   cmark_node_set_syntax_extension(table_header, self);
+  table_header->end_column = parent_container->start_column + (int)strlen(parent_string) - 2;
+  table_header->start_line = table_header->end_line = parent_container->start_line;
 
   table_header->as.opaque = ntr = (node_table_row *)parser->mem->calloc(1, sizeof(node_table_row));
   ntr->is_header = true;
@@ -233,10 +292,13 @@ static cmark_node *try_opening_table_header(cmark_syntax_extension *self,
     cmark_llist *tmp;
 
     for (tmp = header_row->cells; tmp; tmp = tmp->next) {
-      cmark_strbuf *cell_buf = (cmark_strbuf *) tmp->data;
+      node_cell *cell = (node_cell *) tmp->data;
       cmark_node *header_cell = cmark_parser_add_child(parser, table_header,
-          CMARK_NODE_TABLE_CELL, cmark_parser_get_offset(parser));
-      cmark_node_set_string_content(header_cell, (char *) cell_buf->ptr);
+          CMARK_NODE_TABLE_CELL, parent_container->start_column + cell->start_offset);
+      header_cell->start_line = header_cell->end_line = parent_container->start_line;
+      header_cell->internal_offset = cell->internal_offset;
+      header_cell->end_column = parent_container->start_column + cell->end_offset;
+      cmark_node_set_string_content(header_cell, (char *) cell->buf->ptr);
       cmark_node_set_syntax_extension(header_cell, self);
     }
   }
@@ -262,9 +324,9 @@ static cmark_node *try_opening_table_row(cmark_syntax_extension *self,
 
   table_row_block =
       cmark_parser_add_child(parser, parent_container, CMARK_NODE_TABLE_ROW,
-                             cmark_parser_get_offset(parser));
-
+                             parent_container->start_column);
   cmark_node_set_syntax_extension(table_row_block, self);
+  table_row_block->end_column = parent_container->end_column;
   table_row_block->as.opaque = parser->mem->calloc(1, sizeof(node_table_row));
 
   row = row_from_string(self, parser, input + cmark_parser_get_first_nonspace(parser),
@@ -275,17 +337,19 @@ static cmark_node *try_opening_table_row(cmark_syntax_extension *self,
     int i, table_columns = get_n_table_columns(parent_container);
 
     for (tmp = row->cells, i = 0; tmp && i < table_columns; tmp = tmp->next, ++i) {
-      cmark_strbuf *cell_buf = (cmark_strbuf *) tmp->data;
-      cmark_node *cell = cmark_parser_add_child(parser, table_row_block,
-          CMARK_NODE_TABLE_CELL, cmark_parser_get_offset(parser));
-      cmark_node_set_string_content(cell, (char *) cell_buf->ptr);
-      cmark_node_set_syntax_extension(cell, self);
+      node_cell *cell = (node_cell *) tmp->data;
+      cmark_node *node = cmark_parser_add_child(parser, table_row_block,
+          CMARK_NODE_TABLE_CELL, parent_container->start_column + cell->start_offset);
+      node->internal_offset = cell->internal_offset;
+      node->end_column = parent_container->start_column + cell->end_offset;
+      cmark_node_set_string_content(node, (char *) cell->buf->ptr);
+      cmark_node_set_syntax_extension(node, self);
     }
 
     for (; i < table_columns; ++i) {
-      cmark_node *cell = cmark_parser_add_child(
-          parser, table_row_block, CMARK_NODE_TABLE_CELL, cmark_parser_get_offset(parser));
-      cmark_node_set_syntax_extension(cell, self);
+      cmark_node *node = cmark_parser_add_child(
+          parser, table_row_block, CMARK_NODE_TABLE_CELL, 0);
+      cmark_node_set_syntax_extension(node, self);
     }
   }
 
@@ -358,7 +422,8 @@ static int can_contain(cmark_syntax_extension *extension, cmark_node *node,
            child_type == CMARK_NODE_EMPH || child_type == CMARK_NODE_STRONG ||
            child_type == CMARK_NODE_LINK || child_type == CMARK_NODE_IMAGE ||
            child_type == CMARK_NODE_STRIKETHROUGH ||
-           child_type == CMARK_NODE_HTML_INLINE;
+           child_type == CMARK_NODE_HTML_INLINE ||
+           child_type == CMARK_NODE_FOOTNOTE_REFERENCE;
   }
   return false;
 }
@@ -465,6 +530,27 @@ static void latex_render(cmark_syntax_extension *extension,
   }
 }
 
+static const char *xml_attr(cmark_syntax_extension *extension,
+                            cmark_node *node) {
+  if (node->type == CMARK_NODE_TABLE_CELL) {
+    if (cmark_gfm_extensions_get_table_row_is_header(node->parent)) {
+      uint8_t *alignments = get_table_alignments(node->parent->parent);
+      int i = 0;
+      cmark_node *n;
+      for (n = node->parent->first_child; n; n = n->next, ++i)
+        if (n == node)
+          break;
+      switch (alignments[i]) {
+      case 'l': return " align=\"left\"";
+      case 'c': return " align=\"center\"";
+      case 'r': return " align=\"right\"";
+      }
+    }
+  }
+
+  return NULL;
+}
+
 static void man_render(cmark_syntax_extension *extension,
                        cmark_renderer *renderer, cmark_node *node,
                        cmark_event_type ev_type, int options) {
@@ -520,6 +606,18 @@ static void man_render(cmark_syntax_extension *extension,
   }
 }
 
+static void html_table_add_align(cmark_strbuf* html, const char* align, int options) {
+  if (options & CMARK_OPT_TABLE_PREFER_STYLE_ATTRIBUTES) {
+    cmark_strbuf_puts(html, " style=\"text-align: ");
+    cmark_strbuf_puts(html, align);
+    cmark_strbuf_puts(html, "\"");
+  } else {
+    cmark_strbuf_puts(html, " align=\"");
+    cmark_strbuf_puts(html, align);
+    cmark_strbuf_puts(html, "\"");
+  }
+}
+
 struct html_table_state {
   unsigned need_closing_table_body : 1;
   unsigned in_table_header : 1;
@@ -544,10 +642,15 @@ static void html_render(cmark_syntax_extension *extension,
       cmark_strbuf_putc(html, '>');
       table_state->need_closing_table_body = false;
     } else {
-      if (table_state->need_closing_table_body)
+      if (table_state->need_closing_table_body) {
+        cmark_html_render_cr(html);
         cmark_strbuf_puts(html, "</tbody>");
+        cmark_html_render_cr(html);
+      }
       table_state->need_closing_table_body = false;
-      cmark_strbuf_puts(html, "</table>\n");
+      cmark_html_render_cr(html);
+      cmark_strbuf_puts(html, "</table>");
+      cmark_html_render_cr(html);
     }
   } else if (node->type == CMARK_NODE_TABLE_ROW) {
     if (entering) {
@@ -556,6 +659,10 @@ static void html_render(cmark_syntax_extension *extension,
         table_state->in_table_header = 1;
         cmark_strbuf_puts(html, "<thead>");
         cmark_html_render_cr(html);
+      } else if (!table_state->need_closing_table_body) {
+        cmark_strbuf_puts(html, "<tbody>");
+        cmark_html_render_cr(html);
+        table_state->need_closing_table_body = 1;
       }
       cmark_strbuf_puts(html, "<tr");
       cmark_html_render_sourcepos(node, html, options);
@@ -566,9 +673,6 @@ static void html_render(cmark_syntax_extension *extension,
       if (((node_table_row *)node->as.opaque)->is_header) {
         cmark_html_render_cr(html);
         cmark_strbuf_puts(html, "</thead>");
-        cmark_html_render_cr(html);
-        cmark_strbuf_puts(html, "<tbody>");
-        table_state->need_closing_table_body = 1;
         table_state->in_table_header = false;
       }
     }
@@ -588,9 +692,9 @@ static void html_render(cmark_syntax_extension *extension,
           break;
 
       switch (alignments[i]) {
-      case 'l': cmark_strbuf_puts(html, " align=\"left\""); break;
-      case 'c': cmark_strbuf_puts(html, " align=\"center\""); break;
-      case 'r': cmark_strbuf_puts(html, " align=\"right\""); break;
+      case 'l': html_table_add_align(html, "left", options); break;
+      case 'c': html_table_add_align(html, "center", options); break;
+      case 'r': html_table_add_align(html, "right", options); break;
       }
 
       cmark_html_render_sourcepos(node, html, options);
@@ -604,6 +708,16 @@ static void html_render(cmark_syntax_extension *extension,
     }
   } else {
     assert(false);
+  }
+}
+
+static void opaque_alloc(cmark_syntax_extension *self, cmark_mem *mem, cmark_node *node) {
+  if (node->type == CMARK_NODE_TABLE) {
+    node->as.opaque = mem->calloc(1, sizeof(node_table));
+  } else if (node->type == CMARK_NODE_TABLE_ROW) {
+    node->as.opaque = mem->calloc(1, sizeof(node_table_row));
+  } else if (node->type == CMARK_NODE_TABLE_CELL) {
+    node->as.opaque = mem->calloc(1, sizeof(node_cell));
   }
 }
 
@@ -634,8 +748,10 @@ cmark_syntax_extension *create_table_extension(void) {
   cmark_syntax_extension_set_commonmark_render_func(self, commonmark_render);
   cmark_syntax_extension_set_plaintext_render_func(self, commonmark_render);
   cmark_syntax_extension_set_latex_render_func(self, latex_render);
+  cmark_syntax_extension_set_xml_attr_func(self, xml_attr);
   cmark_syntax_extension_set_man_render_func(self, man_render);
   cmark_syntax_extension_set_html_render_func(self, html_render);
+  cmark_syntax_extension_set_opaque_alloc_func(self, opaque_alloc);
   cmark_syntax_extension_set_opaque_free_func(self, opaque_free);
   cmark_syntax_extension_set_commonmark_escape_func(self, escape);
   CMARK_NODE_TABLE = cmark_syntax_extension_add_node(0);
@@ -645,16 +761,43 @@ cmark_syntax_extension *create_table_extension(void) {
   return self;
 }
 
-uint16_t cmarkextensions_get_table_columns(cmark_node *node) {
+uint16_t cmark_gfm_extensions_get_table_columns(cmark_node *node) {
   if (node->type != CMARK_NODE_TABLE)
     return 0;
 
   return ((node_table *)node->as.opaque)->n_columns;
 }
 
-uint8_t *cmarkextensions_get_table_alignments(cmark_node *node) {
+uint8_t *cmark_gfm_extensions_get_table_alignments(cmark_node *node) {
   if (node->type != CMARK_NODE_TABLE)
     return 0;
 
   return ((node_table *)node->as.opaque)->alignments;
+}
+
+int cmark_gfm_extensions_set_table_columns(cmark_node *node, uint16_t n_columns) {
+  return set_n_table_columns(node, n_columns);
+}
+
+int cmark_gfm_extensions_set_table_alignments(cmark_node *node, uint16_t ncols, uint8_t *alignments) {
+  uint8_t *a = (uint8_t *)cmark_node_mem(node)->calloc(1, ncols);
+  memcpy(a, alignments, ncols);
+  return set_table_alignments(node, a);
+}
+
+int cmark_gfm_extensions_get_table_row_is_header(cmark_node *node)
+{
+  if (!node || node->type != CMARK_NODE_TABLE_ROW)
+    return 0;
+
+  return ((node_table_row *)node->as.opaque)->is_header;
+}
+
+int cmark_gfm_extensions_set_table_row_is_header(cmark_node *node, int is_header)
+{
+  if (!node || node->type != CMARK_NODE_TABLE_ROW)
+    return 0;
+
+  ((node_table_row *)node->as.opaque)->is_header = (is_header != 0);
+  return 1;
 }

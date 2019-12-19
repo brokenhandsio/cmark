@@ -37,11 +37,11 @@ bufsize_t _scan_at(bufsize_t (*scanner)(const unsigned char *), cmark_chunk *c, 
 
   tagname = [A-Za-z][A-Za-z0-9-]*;
 
-  blocktagname = 'address'|'article'|'aside'|'base'|'basefont'|'blockquote'|'body'|'caption'|'center'|'col'|'colgroup'|'dd'|'details'|'dialog'|'dir'|'div'|'dl'|'dt'|'fieldset'|'figcaption'|'figure'|'footer'|'form'|'frame'|'frameset'|'h1'|'h2'|'h3'|'h4'|'h5'|'h6'|'head'|'header'|'hr'|'html'|'iframe'|'legend'|'li'|'link'|'main'|'menu'|'menuitem'|'meta'|'nav'|'noframes'|'ol'|'optgroup'|'option'|'p'|'param'|'section'|'source'|'title'|'summary'|'table'|'tbody'|'td'|'tfoot'|'th'|'thead'|'title'|'tr'|'track'|'ul';
+  blocktagname = 'address'|'article'|'aside'|'base'|'basefont'|'blockquote'|'body'|'caption'|'center'|'col'|'colgroup'|'dd'|'details'|'dialog'|'dir'|'div'|'dl'|'dt'|'fieldset'|'figcaption'|'figure'|'footer'|'form'|'frame'|'frameset'|'h1'|'h2'|'h3'|'h4'|'h5'|'h6'|'head'|'header'|'hr'|'html'|'iframe'|'legend'|'li'|'link'|'main'|'menu'|'menuitem'|'nav'|'noframes'|'ol'|'optgroup'|'option'|'p'|'param'|'section'|'source'|'title'|'summary'|'table'|'tbody'|'td'|'tfoot'|'th'|'thead'|'title'|'tr'|'track'|'ul';
 
   attributename = [a-zA-Z_:][a-zA-Z0-9:._-]*;
 
-  unquotedvalue = [^"'=<>`\x00]+;
+  unquotedvalue = [^ \t\r\n\v\f"'=<>`\x00]+;
   singlequotedvalue = ['][^'\x00]*['];
   doublequotedvalue = ["][^"\x00]*["];
 
@@ -122,6 +122,17 @@ bufsize_t _scan_html_tag(const unsigned char *p)
 */
 }
 
+// Try to (liberally) match an HTML tag after first <, returning num of chars matched.
+bufsize_t _scan_liberal_html_tag(const unsigned char *p)
+{
+  const unsigned char *marker = NULL;
+  const unsigned char *start = p;
+/*!re2c
+  [^\n\x00]+ [>] { return (bufsize_t)(p - start); }
+  * { return 0; }
+*/
+}
+
 // Try to match an HTML block tag start line, returning
 // an integer code for the type of block (1-6, matching the spec).
 // #7 is handled by a separate function, below.
@@ -156,7 +167,7 @@ bufsize_t _scan_html_block_end_1(const unsigned char *p)
   const unsigned char *marker = NULL;
   const unsigned char *start = p;
 /*!re2c
-  .* [<] [/] ('script'|'pre'|'style') [>] { return (bufsize_t)(p - start); }
+  [^\n\x00]* [<] [/] ('script'|'pre'|'style') [>] { return (bufsize_t)(p - start); }
   * { return 0; }
 */
 }
@@ -167,7 +178,7 @@ bufsize_t _scan_html_block_end_2(const unsigned char *p)
   const unsigned char *marker = NULL;
   const unsigned char *start = p;
 /*!re2c
-  .* '-->' { return (bufsize_t)(p - start); }
+  [^\n\x00]* '-->' { return (bufsize_t)(p - start); }
   * { return 0; }
 */
 }
@@ -178,7 +189,7 @@ bufsize_t _scan_html_block_end_3(const unsigned char *p)
   const unsigned char *marker = NULL;
   const unsigned char *start = p;
 /*!re2c
-  .* '?>' { return (bufsize_t)(p - start); }
+  [^\n\x00]* '?>' { return (bufsize_t)(p - start); }
   * { return 0; }
 */
 }
@@ -189,7 +200,7 @@ bufsize_t _scan_html_block_end_4(const unsigned char *p)
   const unsigned char *marker = NULL;
   const unsigned char *start = p;
 /*!re2c
-  .* '>' { return (bufsize_t)(p - start); }
+  [^\n\x00]* '>' { return (bufsize_t)(p - start); }
   * { return 0; }
 */
 }
@@ -200,7 +211,7 @@ bufsize_t _scan_html_block_end_5(const unsigned char *p)
   const unsigned char *marker = NULL;
   const unsigned char *start = p;
 /*!re2c
-  .* ']]>' { return (bufsize_t)(p - start); }
+  [^\n\x00]* ']]>' { return (bufsize_t)(p - start); }
   * { return 0; }
 */
 }
@@ -215,7 +226,7 @@ bufsize_t _scan_link_title(const unsigned char *p)
 /*!re2c
   ["] (escaped_char|[^"\x00])* ["]   { return (bufsize_t)(p - start); }
   ['] (escaped_char|[^'\x00])* ['] { return (bufsize_t)(p - start); }
-  [(] (escaped_char|[^)\x00])* [)]  { return (bufsize_t)(p - start); }
+  [(] (escaped_char|[^()\x00])* [)]  { return (bufsize_t)(p - start); }
   * { return 0; }
 */
 }
@@ -253,21 +264,6 @@ bufsize_t _scan_setext_heading_line(const unsigned char *p)
 */
 }
 
-// Scan a thematic break line: "...three or more hyphens, asterisks,
-// or underscores on a line by themselves. If you wish, you may use
-// spaces between the hyphens or asterisks."
-bufsize_t _scan_thematic_break(const unsigned char *p)
-{
-  const unsigned char *marker = NULL;
-  const unsigned char *start = p;
-/*!re2c
-  ([*][ \t]*){3,} [ \t]* [\r\n] { return (bufsize_t)(p - start); }
-  ([_][ \t]*){3,} [ \t]* [\r\n] { return (bufsize_t)(p - start); }
-  ([-][ \t]*){3,} [ \t]* [\r\n] { return (bufsize_t)(p - start); }
-  * { return 0; }
-*/
-}
-
 // Scan an opening code fence.
 bufsize_t _scan_open_code_fence(const unsigned char *p)
 {
@@ -275,7 +271,7 @@ bufsize_t _scan_open_code_fence(const unsigned char *p)
   const unsigned char *start = p;
 /*!re2c
   [`]{3,} / [^`\r\n\x00]*[\r\n] { return (bufsize_t)(p - start); }
-  [~]{3,} / [^~\r\n\x00]*[\r\n] { return (bufsize_t)(p - start); }
+  [~]{3,} / [^\r\n\x00]*[\r\n] { return (bufsize_t)(p - start); }
   * { return 0; }
 */
 }
@@ -299,7 +295,7 @@ bufsize_t _scan_entity(const unsigned char *p)
   const unsigned char *marker = NULL;
   const unsigned char *start = p;
 /*!re2c
-  [&] ([#] ([Xx][A-Fa-f0-9]{1,8}|[0-9]{1,8}) |[A-Za-z][A-Za-z0-9]{1,31} ) [;]
+  [&] ([#] ([Xx][A-Fa-f0-9]{1,6}|[0-9]{1,7}) |[A-Za-z][A-Za-z0-9]{1,31} ) [;]
      { return (bufsize_t)(p - start); }
   * { return 0; }
 */
@@ -318,3 +314,13 @@ bufsize_t _scan_dangerous_url(const unsigned char *p)
 */
 }
 
+// Scans a footnote definition opening.
+bufsize_t _scan_footnote_definition(const unsigned char *p)
+{
+  const unsigned char *marker = NULL;
+  const unsigned char *start = p;
+/*!re2c
+  '[^' ([^\] \r\n\x00\t]+) ']:' [ \t]* { return (bufsize_t)(p - start); }
+  * { return 0; }
+*/
+}

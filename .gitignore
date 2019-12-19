@@ -31,6 +31,8 @@
 bstrlib.txt
 build
 cmark.dSYM/*
+cmark
+.vscode
 
 # Testing and benchmark
 alltests.md
@@ -45,3 +47,5 @@ test/afl_results/
 /*.xcodeproj
 Package.pins
 DerivedData/
+.swiftpm
+Package.resolved

@@ -2,9 +2,9 @@
 #define CMARK_PARSER_H
 
 #include <stdio.h>
+#include "references.h"
 #include "node.h"
 #include "buffer.h"
-#include "memory.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,7 +15,7 @@ extern "C" {
 struct cmark_parser {
   struct cmark_mem *mem;
   /* A hashtable of urls in the current document for cross-references */
-  struct cmark_reference_map *refmap;
+  struct cmark_map *refmap;
   /* The root node of the parser, always a CMARK_NODE_DOCUMENT */
   struct cmark_node *root;
   /* The last open block after a line is fully processed */
@@ -30,6 +30,7 @@ struct cmark_parser {
   bufsize_t first_nonspace;
   /* See the documentation for cmark_parser_get_first_nonspace_column() in cmark.h */
   bufsize_t first_nonspace_column;
+  bufsize_t thematic_break_kill_pos;
   /* See the documentation for cmark_parser_get_indent() in cmark.h */
   int indent;
   /* See the documentation for cmark_parser_is_blank() in cmark.h */

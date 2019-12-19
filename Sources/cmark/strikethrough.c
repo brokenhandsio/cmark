@@ -1,5 +1,6 @@
 #include "strikethrough.h"
 #include "parser.h"
+#include "render.h"
 
 cmark_node_type CMARK_NODE_STRIKETHROUGH;
 
@@ -23,8 +24,11 @@ static cmark_node *match(cmark_syntax_extension *self, cmark_parser *parser,
 
   res = cmark_node_new_with_mem(CMARK_NODE_TEXT, parser->mem);
   cmark_node_set_literal(res, buffer);
+  res->start_line = res->end_line = cmark_inline_parser_get_line(inline_parser);
+  res->start_column = cmark_inline_parser_get_column(inline_parser) - delims;
 
-  if (left_flanking || right_flanking) {
+  if ((left_flanking || right_flanking) &&
+      (delims == 2 || (!(parser->options & CMARK_OPT_STRIKETHROUGH_DOUBLE_TILDE) && delims == 1))) {
     cmark_inline_parser_push_delimiter(inline_parser, character, left_flanking,
                                        right_flanking, res);
   }
@@ -42,12 +46,14 @@ static delimiter *insert(cmark_syntax_extension *self, cmark_parser *parser,
 
   strikethrough = opener->inl_text;
 
+  if (opener->inl_text->as.literal.len != closer->inl_text->as.literal.len)
+    goto done;
+
   if (!cmark_node_set_type(strikethrough, CMARK_NODE_STRIKETHROUGH))
     goto done;
 
   cmark_node_set_syntax_extension(strikethrough, self);
 
-  cmark_node_set_string_content(strikethrough, "~");
   tmp = cmark_node_next(opener->inl_text);
 
   while (tmp) {
@@ -58,6 +64,7 @@ static delimiter *insert(cmark_syntax_extension *self, cmark_parser *parser,
     tmp = next;
   }
 
+  strikethrough->end_column = closer->inl_text->start_column + closer->inl_text->as.literal.len - 1;
   cmark_node_free(closer->inl_text);
 
   delim = closer;
@@ -89,7 +96,7 @@ static int can_contain(cmark_syntax_extension *extension, cmark_node *node,
 static void commonmark_render(cmark_syntax_extension *extension,
                               cmark_renderer *renderer, cmark_node *node,
                               cmark_event_type ev_type, int options) {
-  renderer->out(renderer, node, cmark_node_get_string_content(node), false, LITERAL);
+  renderer->out(renderer, node, "~~", false, LITERAL);
 }
 
 static void latex_render(cmark_syntax_extension *extension,
@@ -128,6 +135,12 @@ static void html_render(cmark_syntax_extension *extension,
   }
 }
 
+static void plaintext_render(cmark_syntax_extension *extension,
+                             cmark_renderer *renderer, cmark_node *node,
+                             cmark_event_type ev_type, int options) {
+  renderer->out(renderer, node, "~", false, LITERAL);
+}
+
 cmark_syntax_extension *create_strikethrough_extension(void) {
   cmark_syntax_extension *ext = cmark_syntax_extension_new("strikethrough");
   cmark_llist *special_chars = NULL;
@@ -138,6 +151,7 @@ cmark_syntax_extension *create_strikethrough_extension(void) {
   cmark_syntax_extension_set_latex_render_func(ext, latex_render);
   cmark_syntax_extension_set_man_render_func(ext, man_render);
   cmark_syntax_extension_set_html_render_func(ext, html_render);
+  cmark_syntax_extension_set_plaintext_render_func(ext, plaintext_render);
   CMARK_NODE_STRIKETHROUGH = cmark_syntax_extension_add_node(1);
 
   cmark_syntax_extension_set_match_inline_func(ext, match);
@@ -146,6 +160,8 @@ cmark_syntax_extension *create_strikethrough_extension(void) {
   cmark_mem *mem = cmark_get_default_mem_allocator();
   special_chars = cmark_llist_append(mem, special_chars, (void *)'~');
   cmark_syntax_extension_set_special_inline_chars(ext, special_chars);
+
+  cmark_syntax_extension_set_emphasis(ext, 1);
 
   return ext;
 }
