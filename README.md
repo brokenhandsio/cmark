@@ -1,6 +1,8 @@
 # cmark (Github Flavoured Markdown)
 
-[![Build Status](https://travis-ci.org/brokenhandsio/cmark-gfm.svg?branch=master)](https://travis-ci.org/brokenhandsio/cmark-gfm)
+[![Language](https://img.shields.io/badge/Swift-5.1-brightgreen.svg)](http://swift.org)
+[![Build Status](https://github.com/brokenhandsio/cmark-gfm/workflows/CI/badge.svg?branch=master)](https://github.com/brokenhandsio/cmark-gfm/actions)
+[![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/brokenhandsio/cmark-gfm/master/LICENSE)
 
 `cmark-gfm` is an SPM-compatible fork of Github's implementation of the [CommonMark library](http://commonmark.org/). Github's fork adds GitHub Flavoured Markdown extensions to
 [the upstream implementation](https://github.com/jgm/cmark), as defined in [the spec](https://github.github.com/gfm/).
@@ -19,11 +21,11 @@ swift build
 
 # Using
 
-To use this repository, add it to your `Package.swift` file:
+To use this repository, add it to your `Package.swift` manifest:
 
 ```swift
 dependencies: [
     ...,
-    .Package(url: "https://github.com/brokenhandsio/cmark-gfm", majorVersion: 1)
+    .package(url: "https://github.com/brokenhandsio/cmark-gfm.git", from: "2.0.0")
 ]
 ```
