@@ -26,6 +26,7 @@
 #include "strikethrough.h"
 #include "table.h"
 #include "tagfilter.h"
+#include "tasklist.h"
 
 #define CODE_INDENT 4
 #define TAB_STOP 4
@@ -646,6 +647,7 @@ cmark_node *cmark_parse_file(FILE *f, int options) {
   cmark_parser_attach_syntax_extension(parser, create_strikethrough_extension());
   cmark_parser_attach_syntax_extension(parser, create_table_extension());
   cmark_parser_attach_syntax_extension(parser, create_tagfilter_extension());
+  cmark_parser_attach_syntax_extension(parser, create_tasklist_extension());
   size_t bytes;
   cmark_node *document;
 
