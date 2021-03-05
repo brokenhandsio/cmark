@@ -6,6 +6,13 @@
 #include "houdini.h"
 #include "cmark-gfm.h"
 #include "buffer.h"
+// Required for GRM cmark function
+#include "autolink.h"
+#include "strikethrough.h"
+#include "table.h"
+#include "tagfilter.h"
+#include "tasklist.h"
+#include "parser.h"
 
 cmark_node_type CMARK_NODE_LAST_BLOCK = CMARK_NODE_FOOTNOTE_DEFINITION;
 cmark_node_type CMARK_NODE_LAST_INLINE = CMARK_NODE_FOOTNOTE_REFERENCE;
@@ -51,5 +58,32 @@ char *cmark_markdown_to_html(const char *text, size_t len, int options) {
   result = cmark_render_html(doc, options, NULL);
   cmark_node_free(doc);
 
+  return result;
+}
+
+char *cmark_gfm_markdown_to_html(const char *text, size_t len, int options) {
+  cmark_node *doc = NULL;
+  cmark_parser *parser = NULL;
+  char *result;
+
+  // Create a new parser we control
+  parser = cmark_parser_new_with_mem(options, cmark_get_arena_mem_allocator());
+  // Manually register the extensions
+  cmark_parser_attach_syntax_extension(parser, create_autolink_extension());
+  cmark_parser_attach_syntax_extension(parser, create_strikethrough_extension());
+  cmark_parser_attach_syntax_extension(parser, create_table_extension());
+  cmark_parser_attach_syntax_extension(parser, create_tagfilter_extension());
+  cmark_parser_attach_syntax_extension(parser, create_tasklist_extension());
+
+  cmark_parser_feed(parser, text, len);
+  doc = cmark_parser_finish(parser);
+
+  cmark_mem *mem = cmark_get_default_mem_allocator();
+  result = cmark_render_html_with_mem(doc, options, parser->syntax_extensions, mem);
+  cmark_parser_free(parser);
+  cmark_node_free(doc);
+  cmark_release_plugins();
+
+  // This is not freed - it's up to the caller to release the memory
   return result;
 }

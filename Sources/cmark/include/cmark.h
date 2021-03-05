@@ -27,6 +27,7 @@ extern "C" {
  */
 CMARK_GFM_EXPORT
 char *cmark_markdown_to_html(const char *text, size_t len, int options);
+char *cmark_gfm_markdown_to_html(const char *text, size_t len, int options);
 
 /** ## Node Structure
  */
